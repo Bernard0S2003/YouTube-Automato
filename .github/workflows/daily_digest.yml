@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           # ATENÇÃO: Substitui pela string do teu Repositório, Ex: 'bernardos/My-Obsidian-Vault'
-          repository: O_TEU_USERNAME/O_TEU_REPOSITORIO_PRIVADO_AQUI
+          repository: Bernard0S2003/Vault-obsi
           token: ${{ secrets.OBSIDIAN_PAT }}
           path: 'vault'
 
