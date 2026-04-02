@@ -1,146 +1,176 @@
 import os
-import subprocess
-import glob
-import json
-import time
-import random
+import re
 import datetime
+import feedparser
+import requests
+from youtube_transcript_api import YouTubeTranscriptApi
 import google.generativeai as genai
 
 CWD = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TMP_DIR = os.path.join(CWD, "tmp_scrape")
 OUT_FILE = os.path.join(CWD, "weekly_digest_export.md")
 CHANNELS_FILE = os.path.join(CWD, "canais.txt")
+MAX_VIDEO_DURATION_SECS = 2700  # 45 minutos
 
-def run_yt_dlp_with_backoff(cmd, max_retries=4):
-    retries = 0
-    while retries <= max_retries:
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
-            if "HTTP Error 429" in result.stderr:
-                sleep_time = (2 ** retries) + random.uniform(1, 4)
-                print(f"   [RATE LIMIT 429] Detetado. Agendando nova tentativa {retries+1}/{max_retries} em {sleep_time:.2f}s...")
-                time.sleep(sleep_time)
-                retries += 1
-                continue
-            return result
-        except Exception as e:
-            print(f"Erro subprocesso: {e}")
-            break
-    print("   [FALHA] Não foi possível contornar os rate limits aps tentativas.")
+
+def get_channel_id(channel_url):
+    """Extrai o channel_id real a partir de um URL de canal (@handle)."""
+    try:
+        resp = requests.get(channel_url, timeout=15)
+        match = re.search(r'"externalId"\s*:\s*"(UC[^"]+)"', resp.text)
+        if match:
+            return match.group(1)
+        match = re.search(r'channel_id=([^"&]+)', resp.text)
+        if match:
+            return match.group(1)
+    except Exception as e:
+        print(f"   [ERRO] Falha ao resolver channel_id de {channel_url}: {e}")
     return None
 
+
+def get_recent_videos(channel_id, max_age_hours=48):
+    """Usa o RSS Feed publico do YouTube para listar os videos recentes."""
+    feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    feed = feedparser.parse(feed_url)
+    
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=max_age_hours)
+    recent = []
+    
+    for entry in feed.entries:
+        published = datetime.datetime(*entry.published_parsed[:6], tzinfo=datetime.timezone.utc)
+        if published >= cutoff:
+            video_id = entry.yt_videoid
+            recent.append({
+                "id": video_id,
+                "title": entry.title,
+                "author": entry.author,
+                "url": entry.link,
+                "published": published.isoformat()
+            })
+    return recent
+
+
+def get_transcript(video_id):
+    """Extrai a transcript de um video via youtube-transcript-api (sem yt-dlp)."""
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        
+        # Tentar primeiro legendas manuais em EN ou PT
+        for lang in ['en', 'pt']:
+            try:
+                transcript = transcript_list.find_transcript([lang])
+                segments = transcript.fetch()
+                return " ".join([s.text for s in segments])
+            except Exception:
+                pass
+        
+        # Fallback: legendas auto-geradas
+        try:
+            transcript = transcript_list.find_generated_transcript(['en', 'pt'])
+            segments = transcript.fetch()
+            return " ".join([s.text for s in segments])
+        except Exception:
+            pass
+            
+    except Exception as e:
+        print(f"   [SEM LEGENDAS] {video_id}: {e}")
+    return None
+
+
 def main():
-    print("🚀 Iniciando Cloud Auto-Digest Engine...")
+    print("Iniciando Cloud Auto-Digest Engine v2 (RSS + Transcript API)...")
+
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        print("ERRO CRÍTICO: GEMINI_API_KEY não foi encontrada nas variáveis de ambiente. Terminar o Job.")
+        print("ERRO CRITICO: GEMINI_API_KEY nao encontrada. A terminar.")
         return
-
-    if not os.path.exists(TMP_DIR):
-        os.makedirs(TMP_DIR, exist_ok=True)
-    else:
-        for f in glob.glob(os.path.join(TMP_DIR, "*")): os.remove(f)
 
     with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
         canais = [line.strip() for line in f.readlines() if line.strip()]
 
-    raw_markdown = ""
-    videos_ignorados = []
+    all_transcripts = []
+    videos_sem_legendas = []
 
-    for canal in canais:
-        print(f"\n=> 🕵️‍♂️ Analisando Canal: {canal}")
-        cmd_info = [
-            "python", "-m", "yt_dlp",
-            "--dateafter", "today-2days",
-            "--playlist-end", "5",
-            "-i",
-            "--dump-json",
-            "--impersonate", "chrome",
-            canal
-        ]
+    for canal_url in canais:
+        print(f"\n=> Analisando Canal: {canal_url}")
         
-        result = run_yt_dlp_with_backoff(cmd_info)
-        if result and result.stdout:
-            for line in result.stdout.strip().split('\n'):
-                if not line.strip(): continue
-                try:
-                    info = json.loads(line)
-                    duration = info.get('duration', 0)
-                    title = info.get('title', 'Unknown')
-                    channel = info.get('channel', canal)
-                    video_url = info.get('webpage_url', info.get('url', '')) # Correção fallback flat-playlist
+        channel_id = get_channel_id(canal_url)
+        if not channel_id:
+            print(f"   [SKIP] Nao foi possivel resolver o channel_id.")
+            continue
+        
+        print(f"   Channel ID: {channel_id}")
+        recent_videos = get_recent_videos(channel_id, max_age_hours=48)
+        
+        if not recent_videos:
+            print(f"   Sem videos recentes.")
+            continue
+        
+        for video in recent_videos:
+            print(f"   [VIDEO] {video['title']}")
+            
+            transcript_text = get_transcript(video["id"])
+            
+            if transcript_text:
+                all_transcripts.append({
+                    "channel": video["author"],
+                    "title": video["title"],
+                    "url": video["url"],
+                    "transcript": transcript_text
+                })
+                print(f"   [OK] Transcript extraida ({len(transcript_text)} chars)")
+            else:
+                videos_sem_legendas.append(f"{video['author']} - {video['title']}")
 
-                    if duration > 2700:
-                        print(f"   [Ignorado >45m] {title}")
-                        videos_ignorados.append(f"{channel} === {title}")
-                    else:
-                        print(f"   [Descarregando Legendas] {title}")
-                        cmd_sub = [
-                            "python", "-m", "yt_dlp",
-                            "--write-auto-sub", "--write-sub", "--sub-langs", "en,pt", 
-                            "-i",
-                            "--skip-download", 
-                            "--impersonate", "chrome",
-                            "-o", os.path.join(TMP_DIR, "%(channel)s === %(title)s.%(ext)s"),
-                            video_url
-                        ]
-                        run_yt_dlp_with_backoff(cmd_sub)
-                except Exception:
-                    pass
-        elif result and result.stderr:
-            print(f"   [INFO] Sem vídeos extraídos. STDERR: {result.stderr.strip()}")
-
-    # Aggregating Subtitles
-    vtt_files = glob.glob(os.path.join(TMP_DIR, "*.vtt"))
-    if not vtt_files and not videos_ignorados:
-        print("Nenhum video novo processado hoje.")
+    # Se nao ha nada para processar
+    today = datetime.datetime.now().strftime('%Y-%m-%d')
+    if not all_transcripts:
+        print("Nenhuma transcript recolhida hoje.")
         with open(OUT_FILE, "w", encoding="utf-8") as f:
-            f.write(f"---\ntags: [youtube, digest_matinal, multi_canal, diario]\ndate: {datetime.datetime.now().strftime('%Y-%m-%d')}\n---\n# 🌅 Super-Digest Matinal: YouTube (24H)\n\nNenhum dos canais inspecionados publicou vídeos relevantes nas últimas 24 horas. Aproveita o dia! ☕\n")
+            f.write(f"---\ntags: [youtube, digest_matinal, multi_canal, diario]\ndate: {today}\n---\n")
+            f.write("# Super-Digest Matinal: YouTube (24H)\n\n")
+            f.write("Nenhum dos canais inspecionados publicou videos com legendas disponiveis nas ultimas 48 horas.\n")
         return
 
-    for vtt_file in vtt_files:
-        video_name = os.path.basename(vtt_file).replace(".vtt", "")
-        raw_markdown += f"\n\n## 📼 {video_name}\n\n"
-        try:
-            with open(vtt_file, "r", encoding="utf-8") as v:
-                raw_markdown += v.read()
-        except:
-            pass
+    # Construir contexto bruto para o LLM
+    raw_context = ""
+    for t in all_transcripts:
+        raw_context += f"\n\n## Canal: {t['channel']} | Video: {t['title']}\nURL: {t['url']}\n\nTranscript:\n{t['transcript']}\n\n---\n"
 
-    if videos_ignorados:
-        raw_markdown += "\n\n## ⚠️ Videos Longos Ignorados (>45 min)\n"
-        for v in videos_ignorados:
-            raw_markdown += f"- {v}\n"
+    if videos_sem_legendas:
+        raw_context += "\n\n## Videos Sem Legendas Disponiveis\n"
+        for v in videos_sem_legendas:
+            raw_context += f"- {v}\n"
 
-    print("\n🧠 Enviando bruto para Gemini 1.5 Flash API...")
+    print(f"\nEnviando {len(all_transcripts)} transcripts para Gemini Flash...")
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-1.5-flash')
-    
-    prompt = f"""
-Atuas como um assistente intelectual de curadoria.
-Recebes abaixo as transcrições brutas dos meus canais de YouTube das últimas 24H.
-A tua tarefa é limpar o ruído (como patrocínios ou intros logas), sumariar a Tese Principal e as lições vitais de cada vídeo gerando um Super-Digest altamente denso e formatado em Markdown pronto a ser importado para o Obsidian.
 
-Adiciona Frontmatter apropriado.
-Usa as tags: [youtube, digest_matinal, multi_canal, diario] e a data de hoje {datetime.datetime.now().strftime('%Y-%m-%d')}
-Usa o Título: "# 🌅 Super-Digest Matinal: YouTube (24H)"
+    prompt = f"""Atuas como um assistente intelectual de curadoria.
+Recebes abaixo as transcricoes dos meus canais de YouTube das ultimas 24-48H.
+A tua tarefa e limpar o ruido (patrocinios, intros, outros), sumariar a Tese Principal e as licoes vitais de cada video, gerando um Super-Digest altamente denso e formatado em Markdown pronto a ser importado para o Obsidian.
 
-Organiza por blocos elegantes e usa Emojis apropriados. Cita o nome do canal em cada bloco.
+Regras obrigatorias:
+- Adiciona Frontmatter YAML no topo com tags: [youtube, digest_matinal, multi_canal, diario] e date: {today}
+- Titulo principal: "# Super-Digest Matinal: YouTube (24H)"
+- Organiza cada video como um bloco com o nome do canal, titulo do video e um link clicavel para o video original
+- Para cada video escreve: a Tese principal (1-2 frases), os Pontos-Chave (bullet points), e um Veredito Final (1 frase)
+- Usa emojis apropriados nos cabecalhos
+- Escreve em Portugues de Portugal
 
-== TEXTO BRUTO ==:
-{raw_markdown}
+== TRANSCRICOES BRUTAS ==:
+{raw_context}
 """
-    
+
     try:
         response = model.generate_content(prompt)
         with open(OUT_FILE, "w", encoding="utf-8") as f:
             f.write(response.text)
-        print(f"✅ Sucesso! O LLM gerou o relatorio: {OUT_FILE}")
+        print(f"Sucesso! Relatorio gerado: {OUT_FILE}")
     except Exception as e:
         import sys
-        print(f"❌ Erro grave na geração IA: {e}")
+        print(f"Erro grave na geracao IA: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
