@@ -1,0 +1,63 @@
+name: Daily YT Automaton
+
+on:
+  schedule:
+    # Corre todos os dias às 06:00 UTC (alvorada)
+    - cron: '0 6 * * *'
+  workflow_dispatch: # Adiciona o botão mágico no GitHub para correr "On Demand"
+
+jobs:
+  run-ai-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Checkout do Engine Local (Código Público/Script)
+        uses: actions/checkout@v4
+        with:
+          path: 'engine'
+
+      - name: 2. Checkout Privado do Obsidian Vault (Via PAT)
+        uses: actions/checkout@v4
+        with:
+          # ATENÇÃO: Substitui pela string do teu Repositório, Ex: 'bernardos/My-Obsidian-Vault'
+          repository: O_TEU_USERNAME/O_TEU_REPOSITORIO_PRIVADO_AQUI
+          token: ${{ secrets.OBSIDIAN_PAT }}
+          path: 'vault'
+
+      - name: 3. Setup Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 4. Instalar Dependências do ytdlp e Gemini
+        run: |
+          cd engine
+          pip install -r requirements.txt
+
+      - name: 5. 🚀 Inicar Extração e Raciocínio (Script execution)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          cd engine
+          python scripts/cloud_autodigest.py
+
+      - name: 6. 📦 Git Push Assíncrono para o Obsidian Vault
+        run: |
+          # 1. Definir Nome do Ficheiro com a Data Local Host
+          TODAY=$(date +"%Y-%m-%d")
+          
+          # 2. Assegura que o caminho existe no Obsidian Vault
+          TARGET_DIR="vault/99 Resources/YT"
+          mkdir -p "$TARGET_DIR"
+          
+          # 3. Mover o resultado do LLM para lá
+          mv engine/weekly_digest_export.md "$TARGET_DIR/${TODAY}-Super-Digest.md"
+          
+          # 4. Autorizar o Bot no repositório de destino
+          cd vault
+          git config user.name "github-actions-yt-bot"
+          git config user.email "bot@youtube-digest.com"
+          
+          # 5. Adicionar, Comitar e Injetar
+          git add "99 Resources/YT/${TODAY}-Super-Digest.md"
+          git commit -m "🤖 Super-Digest Diário: Injectado de ${TODAY}" || echo "Nada para comitar, videos insuficientes."
+          git push origin main
