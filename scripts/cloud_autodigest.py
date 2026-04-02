@@ -54,6 +54,7 @@ def main():
             "python", "-m", "yt_dlp",
             "--dateafter", "today-2days",
             "--playlist-end", "5",
+            "-i",
             "--dump-json",
             "--impersonate", "chrome",
             canal
@@ -68,7 +69,7 @@ def main():
                     duration = info.get('duration', 0)
                     title = info.get('title', 'Unknown')
                     channel = info.get('channel', canal)
-                    video_url = info.get('webpage_url', '')
+                    video_url = info.get('webpage_url', info.get('url', '')) # Correção fallback flat-playlist
 
                     if duration > 2700:
                         print(f"   [Ignorado >45m] {title}")
@@ -78,6 +79,7 @@ def main():
                         cmd_sub = [
                             "python", "-m", "yt_dlp",
                             "--write-auto-sub", "--write-sub", "--sub-langs", "en,pt", 
+                            "-i",
                             "--skip-download", 
                             "--impersonate", "chrome",
                             "-o", os.path.join(TMP_DIR, "%(channel)s === %(title)s.%(ext)s"),
@@ -86,6 +88,8 @@ def main():
                         run_yt_dlp_with_backoff(cmd_sub)
                 except Exception:
                     pass
+        elif result and result.stderr:
+            print(f"   [INFO] Sem vídeos extraídos. STDERR: {result.stderr.strip()}")
 
     # Aggregating Subtitles
     vtt_files = glob.glob(os.path.join(TMP_DIR, "*.vtt"))
