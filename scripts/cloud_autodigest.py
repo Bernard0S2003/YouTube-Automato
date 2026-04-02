@@ -50,27 +50,11 @@ def get_recent_videos(channel_id, max_age_hours=48):
 
 
 def get_transcript(video_id):
-    """Extrai a transcript de um video via youtube-transcript-api (sem yt-dlp)."""
+    """Extrai a transcript de um video via youtube-transcript-api v1.x."""
+    ytt = YouTubeTranscriptApi()
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        
-        # Tentar primeiro legendas manuais em EN ou PT
-        for lang in ['en', 'pt']:
-            try:
-                transcript = transcript_list.find_transcript([lang])
-                segments = transcript.fetch()
-                return " ".join([s.text for s in segments])
-            except Exception:
-                pass
-        
-        # Fallback: legendas auto-geradas
-        try:
-            transcript = transcript_list.find_generated_transcript(['en', 'pt'])
-            segments = transcript.fetch()
-            return " ".join([s.text for s in segments])
-        except Exception:
-            pass
-            
+        transcript = ytt.fetch(video_id, languages=['en', 'pt'])
+        return " ".join([snippet.text for snippet in transcript])
     except Exception as e:
         print(f"   [SEM LEGENDAS] {video_id}: {e}")
     return None
