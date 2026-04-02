@@ -52,7 +52,7 @@ def main():
         print(f"\n=> 🕵️‍♂️ Analisando Canal: {canal}")
         cmd_info = [
             "python", "-m", "yt_dlp",
-            "--dateafter", "today-1day",
+            "--dateafter", "today-2days",
             "--playlist-end", "5",
             "--dump-json",
             "--impersonate", "chrome",
