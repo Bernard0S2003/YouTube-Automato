@@ -1,2 +1,3 @@
-yt-dlp==2024.03.10
-google-generativeai==0.4.1
+yt-dlp
+curl_cffi
+google-generativeai
