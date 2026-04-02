@@ -42,6 +42,11 @@ jobs:
 
       - name: 6. 📦 Git Push Assíncrono para o Obsidian Vault
         run: |
+          if [ ! -f "engine/weekly_digest_export.md" ]; then
+            echo "Aviso: O ficheiro weekly_digest_export.md não foi gerado. Terminando pipeline preventivamente."
+            exit 0
+          fi
+          
           # 1. Definir Nome do Ficheiro com a Data Local Host
           TODAY=$(date +"%Y-%m-%d")
           

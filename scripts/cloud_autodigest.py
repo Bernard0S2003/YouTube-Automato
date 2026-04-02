@@ -91,6 +91,8 @@ def main():
     vtt_files = glob.glob(os.path.join(TMP_DIR, "*.vtt"))
     if not vtt_files and not videos_ignorados:
         print("Nenhum video novo processado hoje.")
+        with open(OUT_FILE, "w", encoding="utf-8") as f:
+            f.write(f"---\ntags: [youtube, digest_matinal, multi_canal, diario]\ndate: {datetime.datetime.now().strftime('%Y-%m-%d')}\n---\n# 🌅 Super-Digest Matinal: YouTube (24H)\n\nNenhum dos canais inspecionados publicou vídeos relevantes nas últimas 24 horas. Aproveita o dia! ☕\n")
         return
 
     for vtt_file in vtt_files:
@@ -132,7 +134,9 @@ Organiza por blocos elegantes e usa Emojis apropriados. Cita o nome do canal em 
             f.write(response.text)
         print(f"✅ Sucesso! O LLM gerou o relatorio: {OUT_FILE}")
     except Exception as e:
+        import sys
         print(f"❌ Erro grave na geração IA: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
